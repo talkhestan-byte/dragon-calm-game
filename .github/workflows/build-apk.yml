@@ -37,10 +37,8 @@ jobs:
       - name: Generate Android project
         run: npx cap add android
 
-      # 👇 این مرحله جدید اضافه شده است 👇
-      - name: Generate App Icons and Splash Screens
-        run: npx capacitor-assets generate --android
-      # 👆 --------------------------------- 👆
+      - name: Generate App Icons
+        run: npx @capacitor/assets generate --android
 
       - name: Sync Capacitor
         run: npx cap sync android

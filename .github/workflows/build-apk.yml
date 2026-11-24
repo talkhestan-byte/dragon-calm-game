@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Signed Android APK
 
 on:
   workflow_dispatch:
@@ -10,17 +10,18 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  build-release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get source code
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -34,25 +35,77 @@ jobs:
       - name: Build web assets
         run: npm run build
 
-      - name: Generate Android project
+      - name: Add Android platform
         run: npx cap add android
 
-      - name: Generate App Icons
+      - name: Generate Android icons
         run: npx @capacitor/assets generate --android
 
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Build debug APK
+      - name: Decode and validate release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/dragon-release.jks"
+          test -s "$RUNNER_TEMP/dragon-release.jks"
+          keytool -list -keystore "$RUNNER_TEMP/dragon-release.jks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/dragon-release.jks" >> "$GITHUB_ENV"
+
+      - name: Configure Android release signing
+        working-directory: android/app
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cat >> build.gradle <<'GRADLE'
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("KEYSTORE_PATH"))
+                      storePassword System.getenv("KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("KEY_ALIAS")
+                      keyPassword System.getenv("KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                  }
+              }
+          }
+          GRADLE
+
+      - name: Build signed release APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleRelease
 
-      - name: Upload APK
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: atishak-android-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: dragon-calm-game-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
